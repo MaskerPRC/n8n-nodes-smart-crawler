@@ -1,11 +1,14 @@
 import type {
+	IDataObject,
 	IExecuteFunctions,
 	INodeExecutionData,
 	INodeType,
 	INodeTypeDescription,
 } from 'n8n-workflow';
 import { NodeConnectionTypes, NodeOperationError } from 'n8n-workflow';
+// eslint-disable-next-line @n8n/community-nodes/no-restricted-imports
 import axios from 'axios';
+// eslint-disable-next-line @n8n/community-nodes/no-restricted-imports
 import * as cheerio from 'cheerio';
 
 interface FieldConfig {
@@ -24,11 +27,24 @@ interface JumpConfig {
 	nextJump?: JumpConfig;
 }
 
+interface FieldData {
+	name: string;
+	selector: string;
+	type: 'text' | 'html' | 'attribute';
+	attribute?: string;
+	isJump?: boolean;
+	jumpConfig?: Record<string, unknown>;
+}
+
+interface FieldsData {
+	field?: FieldData[];
+}
+
 export class SmartCrawler implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'Smart Crawler',
 		name: 'smartCrawler',
-		icon: 'file:smart-crawler.svg',
+		icon: 'file:../../icons/smart-crawler.svg',
 		group: ['input'],
 		version: 1,
 		description: '通用智能爬虫节点，支持多跳数据提取',
@@ -37,6 +53,7 @@ export class SmartCrawler implements INodeType {
 		},
 		inputs: [NodeConnectionTypes.Main],
 		outputs: [NodeConnectionTypes.Main],
+		usableAsTool: true,
 		properties: [
 			{
 				displayName: '页面链接',
@@ -78,27 +95,25 @@ export class SmartCrawler implements INodeType {
 						name: 'field',
 						values: [
 							{
-								displayName: '字段名称',
-								name: 'name',
-								type: 'string',
-								required: true,
-								default: '',
-								description: '字段的输出名称',
+						displayName: '是否为跳转字段',
+						name: 'isJump',
+						type: 'boolean',
+						default: false,
+						description: 'Whether to extract data from a jump page',
 							},
 							{
-								displayName: '选择器',
-								name: 'selector',
-								type: 'string',
-								required: true,
-								default: '',
-								placeholder: '.title, #name',
-								description: 'CSS选择器，用于提取字段值',
+						displayName: '属性名',
+						name: 'attribute',
+						type: 'string',
+						default: '',
+						placeholder: 'href, src, data-ID',
+						description: '当提取类型为属性值时，指定要提取的属性名',
 							},
 							{
-								displayName: '提取类型',
-								name: 'type',
-								type: 'options',
-								options: [
+						displayName: '提取类型',
+						name: 'type',
+						type: 'options',
+						options: [
 									{
 										name: '文本内容',
 										value: 'text',
@@ -112,328 +127,286 @@ export class SmartCrawler implements INodeType {
 										value: 'attribute',
 									},
 								],
-								default: 'text',
-								description: '如何提取字段值',
+						default: 'text',
+						description: '如何提取字段值',
 							},
 							{
-								displayName: '属性名',
-								name: 'attribute',
-								type: 'string',
-								default: '',
-								placeholder: 'href, src, data-id',
-								displayOptions: {
-									show: {
-										type: ['attribute'],
-									},
-								},
-								description: '当提取类型为属性值时，指定要提取的属性名',
-							},
-							{
-								displayName: '是否为跳转字段',
-								name: 'isJump',
-								type: 'boolean',
-								default: false,
-								description: '是否需要在跳转页面提取数据',
-							},
-							{
-								displayName: '跳转配置',
-								name: 'jumpConfig',
-								type: 'fixedCollection',
-								default: {},
-								displayOptions: {
-									show: {
-										isJump: [true],
-									},
-								},
-								options: [
+						displayName: '跳转配置',
+						name: 'jumpConfig',
+						type: 'fixedCollection',
+						default: {},
+						options: [
 									{
 										displayName: '第一跳',
 										name: 'firstJump',
-										values: [
-											{
+											values:	[
+													{
 												displayName: '点击元素选择器',
 												name: 'clickSelector',
 												type: 'string',
-												required: true,
+													required:	true,
 												default: '',
 												placeholder: 'a.detail-link',
 												description: '用于点击跳转的元素选择器',
-											},
-											{
+													},
+													{
 												displayName: '目标页面数据选择器',
 												name: 'targetSelector',
 												type: 'string',
 												default: '',
-												placeholder: '.content, #main',
+												placeholder: '.content,	#main',
 												description: '跳转后页面中要提取数据的选择器（如果为空则提取整个页面）',
-											},
-											{
+													},
+													{
 												displayName: '字段',
 												name: 'fields',
 												type: 'fixedCollection',
-												typeOptions: {
-													multipleValues: true,
-												},
 												default: {},
 												options: [
-													{
-														displayName: '字段',
-														name: 'field',
-														values: [
 															{
-																displayName: '字段名称',
-																name: 'name',
-																type: 'string',
-																required: true,
-																default: '',
-															},
-															{
-																displayName: '选择器',
-																name: 'selector',
-																type: 'string',
-																required: true,
-																default: '',
-															},
-															{
-																displayName: '提取类型',
-																name: 'type',
-																type: 'options',
-																options: [
-																	{
-																		name: '文本内容',
-																		value: 'text',
-																	},
-																	{
-																		name: 'HTML内容',
-																		value: 'html',
-																	},
-																	{
-																		name: '属性值',
-																		value: 'attribute',
-																	},
-																],
-																default: 'text',
-															},
-															{
-																displayName: '属性名',
-																name: 'attribute',
-																type: 'string',
-																default: '',
-																displayOptions: {
-																	show: {
-																		type: ['attribute'],
-																	},
-																},
-															},
-															{
-																displayName: '是否为跳转字段',
-																name: 'isJump',
-																type: 'boolean',
-																default: false,
-															},
-															{
-																displayName: '跳转配置',
-																name: 'jumpConfig',
-																type: 'fixedCollection',
-																default: {},
-																displayOptions: {
-																	show: {
-																		isJump: [true],
-																	},
-																},
-																options: [
-																	{
-																		displayName: '第二跳',
-																		name: 'secondJump',
-																		values: [
-																			{
-																				displayName: '点击元素选择器',
-																				name: 'clickSelector',
-																				type: 'string',
-																				required: true,
-																				default: '',
-																			},
-																			{
-																				displayName: '目标页面数据选择器',
-																				name: 'targetSelector',
-																				type: 'string',
-																				default: '',
-																			},
-																			{
-																				displayName: '字段',
-																				name: 'fields',
-																				type: 'fixedCollection',
-																				typeOptions: {
-																					multipleValues: true,
+																displayName: '字段',
+																name: 'field',
+																	values: [
+														{
+															displayName: '是否为跳转字段',
+															name: 'isJump',
+															type: 'boolean',
+															default: false,
+														},
+														{
+															displayName: '属性名',
+															name: 'attribute',
+															type: 'string',
+															default: '',
+														},
+														{
+															displayName: '提取类型',
+															name: 'type',
+															type: 'options',
+															options: [
+																		{
+																			name: '文本内容',
+																			value: 'text',
+																		},
+																		{
+																			name: 'HTML内容',
+																			value: 'html',
+																		},
+																		{
+																			name: '属性值',
+																			value: 'attribute',
+																		},
+																	],
+															default: 'text',
+														},
+														{
+															displayName: '跳转配置',
+															name: 'jumpConfig',
+															type: 'fixedCollection',
+															default: {},
+															options: [
+																		{
+																			displayName: '第二跳',
+																			name: 'secondJump',
+																		values:	[
+																				{
+																					displayName: '点击元素选择器',
+																					name: 'clickSelector',
+																					type: 'string',
+																						required:	true,
+																					default: '',
 																				},
+																				{
+																					displayName: '目标页面数据选择器',
+																					name: 'targetSelector',
+																					type: 'string',
+																					default: '',
+																				},
+																				{
+																					displayName: '字段',
+																					name: 'fields',
+																					type: 'fixedCollection',
+																					default: {},
+																					options: [
+																								{
+																									displayName: '字段',
+																									name: 'field',
+																								values: [
+																			{
+																				displayName: '是否为跳转字段',
+																				name: 'isJump',
+																				type: 'boolean',
+																				default: false,
+																			},
+																			{
+																				displayName: '属性名',
+																				name: 'attribute',
+																				type: 'string',
+																				default: '',
+																			},
+																			{
+																				displayName: '提取类型',
+																				name: 'type',
+																				type: 'options',
+																				options: [
+																							{
+																								name: '文本内容',
+																								value: 'text',
+																							},
+																							{
+																								name: 'HTML内容',
+																								value: 'html',
+																							},
+																							{
+																								name: '属性值',
+																								value: 'attribute',
+																							},
+																						],
+																				default: 'text',
+																			},
+																			{
+																				displayName: '跳转配置',
+																				name: 'jumpConfig',
+																				type: 'fixedCollection',
 																				default: {},
 																				options: [
-																					{
-																						displayName: '字段',
-																						name: 'field',
-																						values: [
 																							{
-																								displayName: '字段名称',
-																								name: 'name',
-																								type: 'string',
-																								required: true,
-																								default: '',
-																							},
-																							{
-																								displayName: '选择器',
-																								name: 'selector',
-																								type: 'string',
-																								required: true,
-																								default: '',
-																							},
-																							{
-																								displayName: '提取类型',
-																								name: 'type',
-																								type: 'options',
-																								options: [
+																								displayName: '第三跳',
+																								name: 'thirdJump',
+																									values:	[
 																									{
-																										name: '文本内容',
-																										value: 'text',
+																										displayName: '点击元素选择器',
+																										name: 'clickSelector',
+																										type: 'string',
+																											required:	true,
+																										default: '',
 																									},
 																									{
-																										name: 'HTML内容',
-																										value: 'html',
+																										displayName: '目标页面数据选择器',
+																										name: 'targetSelector',
+																										type: 'string',
+																										default: '',
 																									},
 																									{
-																										name: '属性值',
-																										value: 'attribute',
+																										displayName: '字段',
+																										name: 'fields',
+																										type: 'fixedCollection',
+																										default: {},
+																										options: [
+																													{
+																														displayName: '字段',
+																														name: 'field',
+																															values:	[
+																															{
+																																displayName: '字段名称',
+																																name: 'name',
+																																type: 'string',
+																																	required:	true,
+																																default: '',
+																															},
+																															{
+																																displayName: '选择器',
+																																name: 'selector',
+																																type: 'string',
+																																	required:	true,
+																																default: '',
+																															},
+																															{
+																																displayName: '提取类型',
+																																name: 'type',
+																																type: 'options',
+																																options: [
+																																			{
+																																				name: '文本内容',
+																																				value: 'text',
+																																			},
+																																			{
+																																				name: 'HTML内容',
+																																				value: 'html',
+																																			},
+																																			{
+																																				name: '属性值',
+																																				value: 'attribute',
+																																			},
+																																	],
+																																default: 'text',
+																															},
+																															{
+																																displayName: '属性名',
+																																name: 'attribute',
+																																type: 'string',
+																																default: '',
+																															},
+																															]
+																													},
+																											]
 																									},
-																								],
-																								default: 'text',
+																									]
 																							},
-																							{
-																								displayName: '属性名',
-																								name: 'attribute',
-																								type: 'string',
-																								default: '',
-																								displayOptions: {
-																									show: {
-																										type: ['attribute'],
-																									},
-																								},
-																							},
-																							{
-																								displayName: '是否为跳转字段',
-																								name: 'isJump',
-																								type: 'boolean',
-																								default: false,
-																							},
-																							{
-																								displayName: '跳转配置',
-																								name: 'jumpConfig',
-																								type: 'fixedCollection',
-																								default: {},
-																								displayOptions: {
-																									show: {
-																										isJump: [true],
-																									},
-                                                                                                },
-                                                                                                options: [
-                                                                                                    {
-                                                                                                        displayName: '第三跳',
-                                                                                                        name: 'thirdJump',
-                                                                                                        values: [
-                                                                                                            {
-                                                                                                                displayName: '点击元素选择器',
-                                                                                                                name: 'clickSelector',
-                                                                                                                type: 'string',
-                                                                                                                required: true,
-                                                                                                                default: '',
-                                                                                                            },
-                                                                                                            {
-                                                                                                                displayName: '目标页面数据选择器',
-                                                                                                                name: 'targetSelector',
-                                                                                                                type: 'string',
-                                                                                                                default: '',
-                                                                                                            },
-                                                                                                            {
-                                                                                                                displayName: '字段',
-                                                                                                                name: 'fields',
-                                                                                                                type: 'fixedCollection',
-                                                                                                                typeOptions: {
-                                                                                                                    multipleValues: true,
-                                                                                                                },
-                                                                                                                default: {},
-                                                                                                                options: [
-                                                                                                                    {
-                                                                                                                        displayName: '字段',
-                                                                                                                        name: 'field',
-                                                                                                                        values: [
-                                                                                                                            {
-                                                                                                                                displayName: '字段名称',
-                                                                                                                                name: 'name',
-                                                                                                                                type: 'string',
-                                                                                                                                required: true,
-                                                                                                                                default: '',
-                                                                                                                            },
-                                                                                                                            {
-                                                                                                                                displayName: '选择器',
-                                                                                                                                name: 'selector',
-                                                                                                                                type: 'string',
-                                                                                                                                required: true,
-                                                                                                                                default: '',
-                                                                                                                            },
-                                                                                                                            {
-                                                                                                                                displayName: '提取类型',
-                                                                                                                                name: 'type',
-                                                                                                                                type: 'options',
-                                                                                                                                options: [
-                                                                                                                                    {
-                                                                                                                                        name: '文本内容',
-                                                                                                                                        value: 'text',
-                                                                                                                                    },
-                                                                                                                                    {
-                                                                                                                                        name: 'HTML内容',
-                                                                                                                                        value: 'html',
-                                                                                                                                    },
-                                                                                                                                    {
-                                                                                                                                        name: '属性值',
-                                                                                                                                        value: 'attribute',
-                                                                                                                                    },
-                                                                                                                                ],
-                                                                                                                                default: 'text',
-                                                                                                                            },
-                                                                                                                            {
-                                                                                                                                displayName: '属性名',
-                                                                                                                                name: 'attribute',
-                                                                                                                                type: 'string',
-                                                                                                                                default: '',
-                                                                                                                                displayOptions: {
-                                                                                                                                    show: {
-                                                                                                                                        type: ['attribute'],
-                                                                                                                                    },
-                                                                                                                                },
-                                                                                                                            },
-                                                                                                                        ],
-                                                                                                                    },
-                                                                                                                ],
-                                                                                                            },
-                                                                                                        ],
-                                                                                                    },
-                                                                                                ],
-                                                                                            },			
-																						],
-																					},
-																				],
+																					]
 																			},
-																		],
-																	},
-																],
+																			{
+																				displayName: '选择器',
+																				name: 'selector',
+																				type: 'string',
+																					required:	true,
+																				default: '',
+																			},
+																			{
+																				displayName: '字段名称',
+																				name: 'name',
+																				type: 'string',
+																					required:	true,
+																				default: '',
+																			},
+																			]
+																								},
+																						]
+																				},
+																		]
+																		},
+																]
+														},
+														{
+															displayName: '选择器',
+															name: 'selector',
+															type: 'string',
+																required:	true,
+															default: '',
+														},
+														{
+															displayName: '字段名称',
+															name: 'name',
+															type: 'string',
+																required:	true,
+															default: '',
+														},
+												]
 															},
-														],
+													]
 													},
-												],
-											},
-										],
+											]
 									},
-								],
+					]
 							},
-						],
+							{
+						displayName: '选择器',
+						name: 'selector',
+						type: 'string',
+							required:	true,
+						default: '',
+						placeholder: '.title,	#name',
+						description: 'CSS选择器，用于提取字段值',
+							},
+							{
+						displayName: '字段名称',
+						name: 'name',
+						type: 'string',
+							required:	true,
+						default: '',
+						description: '字段的输出名称',
+							},
+					],
 					},
 				],
 			},
@@ -449,16 +422,7 @@ export class SmartCrawler implements INodeType {
 				const url = this.getNodeParameter('url', itemIndex, '') as string;
 				const cookie = this.getNodeParameter('cookie', itemIndex, '') as string;
 				const listSelector = this.getNodeParameter('listSelector', itemIndex, '') as string;
-				const fieldsData = this.getNodeParameter('fields', itemIndex, {}) as {
-					field?: Array<{
-						name: string;
-						selector: string;
-						type: 'text' | 'html' | 'attribute';
-						attribute?: string;
-						isJump?: boolean;
-						jumpConfig?: any;
-					}>;
-				};
+				const fieldsData = this.getNodeParameter('fields', itemIndex, {}) as FieldsData;
 
 				if (!url) {
 					throw new NodeOperationError(this.getNode(), '页面链接不能为空', { itemIndex });
@@ -493,7 +457,7 @@ export class SmartCrawler implements INodeType {
 				// 处理每个列表项
 				for (let i = 0; i < listItems.length; i++) {
 					const listItem = listItems.eq(i);
-					const itemData: Record<string, any> = {};
+					const itemData: Record<string, unknown> = {};
 
 					// 提取每个字段
 					for (const field of fields) {
@@ -517,7 +481,7 @@ export class SmartCrawler implements INodeType {
 					}
 
 					returnData.push({
-						json: itemData,
+						json: itemData as IDataObject,
 						pairedItem: { item: itemIndex },
 					});
 				}
@@ -538,12 +502,13 @@ export class SmartCrawler implements INodeType {
 
 	private static async extractField(
 		executeFunctions: IExecuteFunctions,
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		$element: cheerio.Cheerio<any>,
-		field: any,
+		field: FieldData,
 		baseUrl: string,
 		cookie: string,
 		jumpLevel: number,
-	): Promise<any> {
+	): Promise<unknown> {
 		if (jumpLevel > 3) {
 			throw new NodeOperationError(
 				executeFunctions.getNode(),
@@ -563,7 +528,13 @@ export class SmartCrawler implements INodeType {
 		}
 
 		// 处理跳转字段
-		const jumpConfig = SmartCrawler.getJumpConfig(field.jumpConfig, jumpLevel);
+		if (!field.jumpConfig) {
+			return null;
+		}
+		const jumpConfig = SmartCrawler.getJumpConfig(
+			field.jumpConfig as Record<string, unknown>,
+			jumpLevel,
+		);
 		if (!jumpConfig) {
 			return null;
 		}
@@ -605,13 +576,21 @@ export class SmartCrawler implements INodeType {
 
 		// 如果配置了字段，提取字段数据
 		if (jumpConfig.fields && jumpConfig.fields.length > 0) {
-			const jumpData: Record<string, any> = {};
+			const jumpData: Record<string, unknown> = {};
 			for (const jumpField of jumpConfig.fields) {
 				try {
+					const fieldData: FieldData = {
+						name: jumpField.name,
+						selector: jumpField.selector,
+						type: jumpField.type,
+						attribute: jumpField.attribute,
+						isJump: jumpField.isJump,
+						jumpConfig: jumpField.jumpConfig as Record<string, unknown> | undefined,
+					};
 					const value = await SmartCrawler.extractField(
 						executeFunctions,
 						targetElement,
-						jumpField,
+						fieldData,
 						jumpUrl,
 						cookie,
 						jumpLevel + 1,
@@ -633,6 +612,7 @@ export class SmartCrawler implements INodeType {
 	}
 
 	private static extractValue(
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		element: cheerio.Cheerio<any>,
 		type: 'text' | 'html' | 'attribute',
 		attribute?: string,
@@ -652,35 +632,41 @@ export class SmartCrawler implements INodeType {
 		}
 	}
 
-	private static getJumpConfig(jumpConfig: any, level: number): JumpConfig | null {
+	private static getJumpConfig(
+		jumpConfig: Record<string, unknown>,
+		level: number,
+	): JumpConfig | null {
 		if (level === 1 && jumpConfig.firstJump) {
-			return SmartCrawler.normalizeJumpConfig(jumpConfig.firstJump);
+			return SmartCrawler.normalizeJumpConfig(jumpConfig.firstJump as Record<string, unknown>);
 		}
 		if (level === 2 && jumpConfig.secondJump) {
-			return SmartCrawler.normalizeJumpConfig(jumpConfig.secondJump);
+			return SmartCrawler.normalizeJumpConfig(jumpConfig.secondJump as Record<string, unknown>);
 		}
 		if (level === 3 && jumpConfig.thirdJump) {
-			return SmartCrawler.normalizeJumpConfig(jumpConfig.thirdJump);
+			return SmartCrawler.normalizeJumpConfig(jumpConfig.thirdJump as Record<string, unknown>);
 		}
 		return null;
 	}
 
-	private static normalizeJumpConfig(config: any): JumpConfig {
+	private static normalizeJumpConfig(config: Record<string, unknown>): JumpConfig {
 		const normalized: JumpConfig = {
-			clickSelector: config.clickSelector || '',
-			targetSelector: config.targetSelector,
+			clickSelector: (config.clickSelector as string) || '',
+			targetSelector: config.targetSelector as string | undefined,
 			fields: [],
 		};
 
-		if (config.fields && config.fields.field) {
-			normalized.fields = config.fields.field.map((f: any) => ({
-				name: f.name,
-				selector: f.selector,
-				type: f.type || 'text',
-				attribute: f.attribute,
-				isJump: f.isJump || false,
-				jumpConfig: f.jumpConfig,
-			}));
+		if (config.fields && typeof config.fields === 'object' && 'field' in config.fields) {
+			const fields = (config.fields as { field?: FieldData[] }).field;
+			if (fields) {
+				normalized.fields = fields.map((f: FieldData): FieldConfig => ({
+					name: f.name,
+					selector: f.selector,
+					type: f.type || 'text',
+					attribute: f.attribute,
+					isJump: f.isJump || false,
+					jumpConfig: f.jumpConfig as JumpConfig | undefined,
+				}));
+			}
 		}
 
 		return normalized;
@@ -688,9 +674,8 @@ export class SmartCrawler implements INodeType {
 
 	private static resolveUrl(baseUrl: string, relativeUrl: string): string {
 		try {
-			// eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
-			const url = new (globalThis as any).URL(relativeUrl, baseUrl);
-			// eslint-disable-next-line @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return
+			// Use Node.js built-in URL constructor
+			const url = new URL(relativeUrl, baseUrl);
 			return url.href;
 		} catch {
 			return relativeUrl;
