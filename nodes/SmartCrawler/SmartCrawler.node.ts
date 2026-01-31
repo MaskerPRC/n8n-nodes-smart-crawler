@@ -432,7 +432,21 @@ export class SmartCrawler implements INodeType {
 					throw new NodeOperationError(this.getNode(), '列表选择器不能为空', { itemIndex });
 				}
 
-				const fields = fieldsData.field || [];
+				// 处理 n8n fixedCollection 的不同数据结构
+				let fields: FieldData[] = [];
+				if (fieldsData && typeof fieldsData === 'object') {
+					if ('field' in fieldsData) {
+						const fieldValue = fieldsData.field;
+						if (Array.isArray(fieldValue)) {
+							fields = fieldValue;
+						} else if (fieldValue && typeof fieldValue === 'object') {
+							// 如果只有一个字段，n8n 可能返回对象而不是数组
+							fields = [fieldValue as FieldData];
+						}
+					} else if (Array.isArray(fieldsData)) {
+						fields = fieldsData as FieldData[];
+					}
+				}
 
 				// 获取初始页面
 				const response = await axios.get(url, {
@@ -655,10 +669,25 @@ export class SmartCrawler implements INodeType {
 			fields: [],
 		};
 
-		if (config.fields && typeof config.fields === 'object' && 'field' in config.fields) {
-			const fields = (config.fields as { field?: FieldData[] }).field;
-			if (fields) {
-				normalized.fields = fields.map((f: FieldData): FieldConfig => ({
+		if (config.fields && typeof config.fields === 'object') {
+			let fieldsArray: FieldData[] = [];
+			
+			// 处理 n8n fixedCollection 的不同数据结构
+			if ('field' in config.fields) {
+				const fields = (config.fields as { field?: FieldData[] }).field;
+				if (Array.isArray(fields)) {
+					fieldsArray = fields;
+				} else if (fields && typeof fields === 'object') {
+					// 如果只有一个字段，n8n 可能返回对象而不是数组
+					fieldsArray = [fields as FieldData];
+				}
+			} else if (Array.isArray(config.fields)) {
+				// 直接是数组的情况
+				fieldsArray = config.fields as FieldData[];
+			}
+			
+			if (fieldsArray.length > 0) {
+				normalized.fields = fieldsArray.map((f: FieldData): FieldConfig => ({
 					name: f.name,
 					selector: f.selector,
 					type: f.type || 'text',
