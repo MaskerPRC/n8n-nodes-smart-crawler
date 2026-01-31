@@ -1,6 +1,6 @@
-# n8n-nodes-smart_crawler
+# n8n-nodes-smart-crawler
 
-[![npm version](https://badge.fury.io/js/n8n-nodes-smart_crawler.svg)](https://www.npmjs.com/package/n8n-nodes-smart_crawler)
+[![npm version](https://badge.fury.io/js/n8n-nodes-smart-crawler.svg)](https://www.npmjs.com/package/n8n-nodes-smart-crawler)
 
 通用智能爬虫 n8n 节点，使用 Axios + Cheerio 实现，支持灵活的页面数据提取和多跳数据采集。
 
@@ -20,7 +20,7 @@
 在 n8n 中安装此节点：
 
 ```bash
-npm install n8n-nodes-smart_crawler
+npm install n8n-nodes-smart-crawler
 ```
 
 然后在 n8n 设置中刷新节点，即可在节点面板中使用。
