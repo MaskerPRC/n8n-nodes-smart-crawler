@@ -6,7 +6,8 @@
       "Bash(npm install:*)",
       "WebFetch(domain:hub.baai.ac.cn)",
       "Bash(npm ls:*)",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "Bash(npm run build:*)"
     ]
   }
 }

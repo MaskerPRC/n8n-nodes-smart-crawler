@@ -6,34 +6,28 @@ import type {
 	INodeTypeDescription,
 } from 'n8n-workflow';
 import { NodeConnectionTypes, NodeOperationError } from 'n8n-workflow';
- 
+
 import axios from 'axios';
- 
+
 import * as cheerio from 'cheerio';
-
-interface FieldConfig {
-	name: string;
-	selector: string;
-	type: 'text' | 'html' | 'attribute';
-	attribute?: string;
-	isJump?: boolean;
-	jumpConfig?: JumpConfig;
-}
-
-interface JumpConfig {
-	clickSelector: string;
-	targetSelector?: string;
-	fields?: FieldConfig[];
-	nextJump?: JumpConfig;
-}
+import type { AnyNode } from 'domhandler';
 
 interface FieldData {
 	name: string;
 	selector: string;
+	fieldType: 'normal' | 'jump';
+	type?: 'text' | 'html' | 'attribute';
+	attribute?: string;
+	clickSelector?: string;
+	targetSelector?: string;
+	jumpFields?: { field?: JumpSubField[] };
+}
+
+interface JumpSubField {
+	name: string;
+	selector: string;
 	type: 'text' | 'html' | 'attribute';
 	attribute?: string;
-	isJump?: boolean;
-	jumpConfig?: Record<string, unknown>;
 }
 
 interface FieldsData {
@@ -82,6 +76,13 @@ export class SmartCrawler implements INodeType {
 				description: '用于选择数据列表的CSS选择器',
 			},
 			{
+				displayName: '启用浏览器渲染',
+				name: 'useBrowser',
+				type: 'boolean',
+				default: false,
+				description: '使用 Puppeteer 渲染页面，适用于 JS 动态渲染的 SPA 页面（如 Vue/React 应用）',
+			},
+			{
 				displayName: '字段配置',
 				name: 'fields',
 				type: 'fixedCollection',
@@ -95,318 +96,141 @@ export class SmartCrawler implements INodeType {
 						name: 'field',
 						values: [
 							{
-						displayName: '是否为跳转字段',
-						name: 'isJump',
-						type: 'boolean',
-						default: false,
-						description: 'Whether to extract data from a jump page',
+								displayName: '字段名称',
+								name: 'name',
+								type: 'string',
+								required: true,
+								default: '',
+								description: '字段的输出名称',
 							},
 							{
-						displayName: '属性名',
-						name: 'attribute',
-						type: 'string',
-						default: '',
-						placeholder: 'href, src, data-ID',
-						description: '当提取类型为属性值时，指定要提取的属性名',
+								displayName: '选择器',
+								name: 'selector',
+								type: 'string',
+								required: true,
+								default: '',
+								placeholder: '.title, #name',
+								description: 'CSS选择器，用于定位元素',
 							},
 							{
-						displayName: '提取类型',
-						name: 'type',
-						type: 'options',
-						options: [
+								displayName: '提取类型',
+								name: 'type',
+								type: 'options',
+								options: [
+									{ name: '文本内容', value: 'text' },
+									{ name: 'HTML内容', value: 'html' },
+									{ name: '属性值', value: 'attribute' },
+								],
+								default: 'text',
+								description: '如何提取字段值',
+								displayOptions: {
+									show: { fieldType: ['normal'] },
+								},
+							},
+							{
+								displayName: '属性名',
+								name: 'attribute',
+								type: 'string',
+								default: '',
+								placeholder: 'href, src, data-id',
+								description: '当提取类型为属性值时，指定要提取的属性名',
+								displayOptions: {
+									show: { fieldType: ['normal'], type: ['attribute'] },
+								},
+							},
+							{
+								displayName: '字段类型',
+								name: 'fieldType',
+								type: 'options',
+								options: [
 									{
-										name: '文本内容',
-										value: 'text',
+										name: '普通字段',
+										value: 'normal',
 									},
 									{
-										name: 'HTML内容',
-										value: 'html',
-									},
-									{
-										name: '属性值',
-										value: 'attribute',
+										name: '跳转字段',
+										value: 'jump',
 									},
 								],
-						default: 'text',
-						description: '如何提取字段值',
+								default: 'normal',
+								description: '普通字段直接提取值，跳转字段会跳转到新页面提取数据',
+							},
+							// ---- 跳转字段配置 ----
+							{
+								displayName: '点击元素选择器',
+								name: 'clickSelector',
+								type: 'string',
+								default: '',
+								placeholder: 'a.detail-link',
+								description: '用于查找跳转链接的选择器（在字段选择器元素内查找）',
+								displayOptions: {
+									show: { fieldType: ['jump'] },
+								},
 							},
 							{
-						displayName: '跳转配置',
-						name: 'jumpConfig',
-						type: 'fixedCollection',
-						default: {},
-						options: [
+								displayName: '目标页面数据选择器',
+								name: 'targetSelector',
+								type: 'string',
+								default: '',
+								placeholder: '.content, #main',
+								description: '跳转后页面中要提取数据的区域选择器（为空则使用整个页面）',
+								displayOptions: {
+									show: { fieldType: ['jump'] },
+								},
+							},
+							{
+								displayName: '跳转页面字段',
+								name: 'jumpFields',
+								type: 'fixedCollection',
+								typeOptions: { multipleValues: true },
+								default: {},
+								displayOptions: {
+									show: { fieldType: ['jump'] },
+								},
+								options: [
 									{
-										displayName: '第一跳',
-										name: 'firstJump',
-											values:	[
-													{
-												displayName: '点击元素选择器',
-												name: 'clickSelector',
+										displayName: '字段',
+										name: 'field',
+										values: [
+											{
+												displayName: '字段名称',
+												name: 'name',
 												type: 'string',
-													required:	true,
+												required: true,
 												default: '',
-												placeholder: 'a.detail-link',
-												description: '用于点击跳转的元素选择器',
-													},
-													{
-												displayName: '目标页面数据选择器',
-												name: 'targetSelector',
+											},
+											{
+												displayName: '选择器',
+												name: 'selector',
 												type: 'string',
+												required: true,
 												default: '',
-												placeholder: '.content,	#main',
-												description: '跳转后页面中要提取数据的选择器（如果为空则提取整个页面）',
-													},
-													{
-												displayName: '字段',
-												name: 'fields',
-												type: 'fixedCollection',
-												default: {},
+											},
+											{
+												displayName: '提取类型',
+												name: 'type',
+												type: 'options',
 												options: [
-															{
-																displayName: '字段',
-																name: 'field',
-																	values: [
-														{
-															displayName: '是否为跳转字段',
-															name: 'isJump',
-															type: 'boolean',
-															default: false,
-														},
-														{
-															displayName: '属性名',
-															name: 'attribute',
-															type: 'string',
-															default: '',
-														},
-														{
-															displayName: '提取类型',
-															name: 'type',
-															type: 'options',
-															options: [
-																		{
-																			name: '文本内容',
-																			value: 'text',
-																		},
-																		{
-																			name: 'HTML内容',
-																			value: 'html',
-																		},
-																		{
-																			name: '属性值',
-																			value: 'attribute',
-																		},
-																	],
-															default: 'text',
-														},
-														{
-															displayName: '跳转配置',
-															name: 'jumpConfig',
-															type: 'fixedCollection',
-															default: {},
-															options: [
-																		{
-																			displayName: '第二跳',
-																			name: 'secondJump',
-																		values:	[
-																				{
-																					displayName: '点击元素选择器',
-																					name: 'clickSelector',
-																					type: 'string',
-																						required:	true,
-																					default: '',
-																				},
-																				{
-																					displayName: '目标页面数据选择器',
-																					name: 'targetSelector',
-																					type: 'string',
-																					default: '',
-																				},
-																				{
-																					displayName: '字段',
-																					name: 'fields',
-																					type: 'fixedCollection',
-																					default: {},
-																					options: [
-																								{
-																									displayName: '字段',
-																									name: 'field',
-																								values: [
-																			{
-																				displayName: '是否为跳转字段',
-																				name: 'isJump',
-																				type: 'boolean',
-																				default: false,
-																			},
-																			{
-																				displayName: '属性名',
-																				name: 'attribute',
-																				type: 'string',
-																				default: '',
-																			},
-																			{
-																				displayName: '提取类型',
-																				name: 'type',
-																				type: 'options',
-																				options: [
-																							{
-																								name: '文本内容',
-																								value: 'text',
-																							},
-																							{
-																								name: 'HTML内容',
-																								value: 'html',
-																							},
-																							{
-																								name: '属性值',
-																								value: 'attribute',
-																							},
-																						],
-																				default: 'text',
-																			},
-																			{
-																				displayName: '跳转配置',
-																				name: 'jumpConfig',
-																				type: 'fixedCollection',
-																				default: {},
-																				options: [
-																							{
-																								displayName: '第三跳',
-																								name: 'thirdJump',
-																									values:	[
-																									{
-																										displayName: '点击元素选择器',
-																										name: 'clickSelector',
-																										type: 'string',
-																											required:	true,
-																										default: '',
-																									},
-																									{
-																										displayName: '目标页面数据选择器',
-																										name: 'targetSelector',
-																										type: 'string',
-																										default: '',
-																									},
-																									{
-																										displayName: '字段',
-																										name: 'fields',
-																										type: 'fixedCollection',
-																										default: {},
-																										options: [
-																													{
-																														displayName: '字段',
-																														name: 'field',
-																															values:	[
-																															{
-																																displayName: '字段名称',
-																																name: 'name',
-																																type: 'string',
-																																	required:	true,
-																																default: '',
-																															},
-																															{
-																																displayName: '选择器',
-																																name: 'selector',
-																																type: 'string',
-																																	required:	true,
-																																default: '',
-																															},
-																															{
-																																displayName: '提取类型',
-																																name: 'type',
-																																type: 'options',
-																																options: [
-																																			{
-																																				name: '文本内容',
-																																				value: 'text',
-																																			},
-																																			{
-																																				name: 'HTML内容',
-																																				value: 'html',
-																																			},
-																																			{
-																																				name: '属性值',
-																																				value: 'attribute',
-																																			},
-																																	],
-																																default: 'text',
-																															},
-																															{
-																																displayName: '属性名',
-																																name: 'attribute',
-																																type: 'string',
-																																default: '',
-																															},
-																															]
-																													},
-																											]
-																									},
-																									]
-																							},
-																					]
-																			},
-																			{
-																				displayName: '选择器',
-																				name: 'selector',
-																				type: 'string',
-																					required:	true,
-																				default: '',
-																			},
-																			{
-																				displayName: '字段名称',
-																				name: 'name',
-																				type: 'string',
-																					required:	true,
-																				default: '',
-																			},
-																			]
-																								},
-																						]
-																				},
-																		]
-																		},
-																]
-														},
-														{
-															displayName: '选择器',
-															name: 'selector',
-															type: 'string',
-																required:	true,
-															default: '',
-														},
-														{
-															displayName: '字段名称',
-															name: 'name',
-															type: 'string',
-																required:	true,
-															default: '',
-														},
-												]
-															},
-													]
-													},
-											]
+													{ name: '文本内容', value: 'text' },
+													{ name: 'HTML内容', value: 'html' },
+													{ name: '属性值', value: 'attribute' },
+												],
+												default: 'text',
+											},
+											{
+												displayName: '属性名',
+												name: 'attribute',
+												type: 'string',
+												default: '',
+												displayOptions: {
+													show: { type: ['attribute'] },
+												},
+											},
+										],
 									},
-					]
+								],
 							},
-							{
-						displayName: '选择器',
-						name: 'selector',
-						type: 'string',
-							required:	true,
-						default: '',
-						placeholder: '.title,	#name',
-						description: 'CSS选择器，用于提取字段值',
-							},
-							{
-						displayName: '字段名称',
-						name: 'name',
-						type: 'string',
-							required:	true,
-						default: '',
-						description: '字段的输出名称',
-							},
-					],
+						],
 					},
 				],
 			},
@@ -422,42 +246,63 @@ export class SmartCrawler implements INodeType {
 				const url = this.getNodeParameter('url', itemIndex, '') as string;
 				const cookie = this.getNodeParameter('cookie', itemIndex, '') as string;
 				const listSelector = this.getNodeParameter('listSelector', itemIndex, '') as string;
+				const useBrowser = this.getNodeParameter('useBrowser', itemIndex, false) as boolean;
 				const fieldsData = this.getNodeParameter('fields', itemIndex, {}) as FieldsData;
 
 				if (!url) {
 					throw new NodeOperationError(this.getNode(), '页面链接不能为空', { itemIndex });
 				}
-
 				if (!listSelector) {
 					throw new NodeOperationError(this.getNode(), '列表选择器不能为空', { itemIndex });
 				}
 
-				// 处理 n8n fixedCollection 的不同数据结构
+				// 解析字段配置
 				let fields: FieldData[] = [];
 				if (fieldsData && typeof fieldsData === 'object') {
 					if ('field' in fieldsData) {
-						const fieldValue = fieldsData.field;
-						if (Array.isArray(fieldValue)) {
-							fields = fieldValue;
-						} else if (fieldValue && typeof fieldValue === 'object') {
-							// 如果只有一个字段，n8n 可能返回对象而不是数组
-							fields = [fieldValue as FieldData];
+						const fv = fieldsData.field;
+						if (Array.isArray(fv)) {
+							fields = fv;
+						} else if (fv && typeof fv === 'object') {
+							fields = [fv as FieldData];
 						}
 					} else if (Array.isArray(fieldsData)) {
 						fields = fieldsData as FieldData[];
 					}
 				}
 
-				// 获取初始页面
-				const response = await axios.get(url, {
-					headers: {
-						...(cookie && { Cookie: cookie }),
-						'User-Agent':
-							'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-					},
-				});
+				// 获取页面 HTML
+				let pageHtml: string;
 
-				const $ = cheerio.load(response.data);
+				if (useBrowser) {
+					const puppeteer = await import('puppeteer');
+					const browser = await puppeteer.default.launch({ headless: true });
+					try {
+						const page = await browser.newPage();
+						if (cookie) {
+							const cookies = cookie.split(';').map(c => {
+								const [name, ...rest] = c.trim().split('=');
+								return { name: name.trim(), value: rest.join('=').trim(), domain: new URL(url).hostname };
+							}).filter(c => c.name && c.value);
+							if (cookies.length) await page.setCookie(...cookies);
+						}
+						await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+						await page.waitForSelector(listSelector, { timeout: 15000 });
+						pageHtml = await page.content();
+					} finally {
+						await browser.close();
+					}
+				} else {
+					const response = await axios.get(url, {
+						headers: {
+							...(cookie && { Cookie: cookie }),
+							'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+						},
+					});
+					pageHtml = response.data;
+				}
+
+				const $ = cheerio.load(pageHtml);
 				const listItems = $(listSelector);
 
 				if (listItems.length === 0) {
@@ -473,18 +318,17 @@ export class SmartCrawler implements INodeType {
 					const listItem = listItems.eq(i);
 					const itemData: Record<string, unknown> = {};
 
-					// 提取每个字段
 					for (const field of fields) {
 						try {
-							const fieldValue = await SmartCrawler.extractField(
-								this,
-								listItem,
-								field,
-								url,
-								cookie,
-								1,
-							);
-							itemData[field.name] = fieldValue;
+							if (field.fieldType === 'jump') {
+								itemData[field.name] = await SmartCrawler.extractJumpField(
+									listItem, field, url, cookie, useBrowser,
+								);
+							} else {
+								itemData[field.name] = SmartCrawler.extractNormalField(
+									listItem, field,
+								);
+							}
 						} catch (error) {
 							if (this.continueOnFail()) {
 								itemData[field.name] = null;
@@ -502,11 +346,11 @@ export class SmartCrawler implements INodeType {
 			} catch (error) {
 				if (this.continueOnFail()) {
 					returnData.push({
-						json: { error: error.message },
+						json: { error: (error as Error).message },
 						pairedItem: { item: itemIndex },
 					});
 				} else {
-					throw new NodeOperationError(this.getNode(), error, { itemIndex });
+					throw new NodeOperationError(this.getNode(), error as Error, { itemIndex });
 				}
 			}
 		}
@@ -514,200 +358,187 @@ export class SmartCrawler implements INodeType {
 		return [returnData];
 	}
 
-	private static async extractField(
-		executeFunctions: IExecuteFunctions,
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		$element: cheerio.Cheerio<any>,
+	/**
+	 * 提取普通字段
+	 */
+	private static extractNormalField(
+		listItem: cheerio.Cheerio<AnyNode>,
+		field: FieldData,
+	): string | null {
+		const el = listItem.find(field.selector).first();
+		if (el.length === 0) return null;
+
+		const type = field.type || 'text';
+		switch (type) {
+			case 'text': return el.text().trim() || null;
+			case 'html': return el.html() || null;
+			case 'attribute': return field.attribute ? el.attr(field.attribute) || null : null;
+			default: return null;
+		}
+	}
+
+	/**
+	 * 提取跳转字段 - 跳转到新页面并提取子字段
+	 */
+	private static async extractJumpField(
+		listItem: cheerio.Cheerio<AnyNode>,
 		field: FieldData,
 		baseUrl: string,
 		cookie: string,
-		jumpLevel: number,
-	): Promise<unknown> {
-		if (jumpLevel > 3) {
-			throw new NodeOperationError(
-				executeFunctions.getNode(),
-				'最多支持3跳，已达到最大跳数限制',
-			);
-		}
+		useBrowser: boolean,
+	): Promise<Record<string, unknown> | string | null> {
+		const el = listItem.find(field.selector).first();
+		if (el.length === 0) return null;
 
-		const element = $element.find(field.selector).first();
-
-		if (element.length === 0) {
-			return null;
-		}
-
-		// 如果不是跳转字段，直接提取值
-		if (!field.isJump || !field.jumpConfig) {
-			return SmartCrawler.extractValue(element, field.type, field.attribute);
-		}
-
-		// 处理跳转字段
-		if (!field.jumpConfig) {
-			return null;
-		}
-		const jumpConfig = SmartCrawler.getJumpConfig(
-			field.jumpConfig as Record<string, unknown>,
-			jumpLevel,
-		);
-		if (!jumpConfig) {
-			return null;
-		}
-
-		// 获取跳转链接
-		const clickElement = element.find(jumpConfig.clickSelector).first();
-		if (clickElement.length === 0) {
-			return null;
-		}
-
-		let jumpUrl: string;
-		if (clickElement.is('a')) {
-			const href = clickElement.attr('href');
-			if (!href) {
-				return null;
-			}
-			jumpUrl = SmartCrawler.resolveUrl(baseUrl, href);
-		} else {
-			const href = clickElement.attr('href') || clickElement.attr('data-href');
-			if (!href) {
-				return null;
-			}
-			jumpUrl = SmartCrawler.resolveUrl(baseUrl, href);
-		}
+		// 查找跳转链接
+		const jumpUrl = SmartCrawler.findJumpUrl(el, field.clickSelector || '', baseUrl);
+		if (!jumpUrl) return null;
 
 		// 获取跳转页面
-		const jumpResponse = await axios.get(jumpUrl, {
-			headers: {
-				...(cookie && { Cookie: cookie }),
-				'User-Agent':
-					'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-			},
-		});
+		let jumpHtml: string;
 
-		const $jump = cheerio.load(jumpResponse.data);
-		const targetElement = jumpConfig.targetSelector
-			? $jump(jumpConfig.targetSelector).first()
-			: $jump('body').first();
+		if (useBrowser) {
+			const puppeteer = await import('puppeteer');
+			const browser = await puppeteer.default.launch({ headless: true });
+			try {
+				const page = await browser.newPage();
+				if (cookie) {
+					const cookies = cookie.split(';').map(c => {
+						const [name, ...rest] = c.trim().split('=');
+						return { name: name.trim(), value: rest.join('=').trim(), domain: new URL(jumpUrl).hostname };
+					}).filter(c => c.name && c.value);
+					if (cookies.length) await page.setCookie(...cookies);
+				}
+				await page.goto(jumpUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+				if (field.targetSelector) {
+					await page.waitForSelector(field.targetSelector, { timeout: 15000 }).catch(() => {});
+				}
+				jumpHtml = await page.content();
+			} finally {
+				await browser.close();
+			}
+		} else {
+			const res = await axios.get(jumpUrl, {
+				headers: {
+					...(cookie && { Cookie: cookie }),
+					'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+				},
+			});
+			jumpHtml = res.data;
+		}
 
-		// 如果配置了字段，提取字段数据
-		if (jumpConfig.fields && jumpConfig.fields.length > 0) {
-			const jumpData: Record<string, unknown> = {};
-			for (const jumpField of jumpConfig.fields) {
-				try {
-					const fieldData: FieldData = {
-						name: jumpField.name,
-						selector: jumpField.selector,
-						type: jumpField.type,
-						attribute: jumpField.attribute,
-						isJump: jumpField.isJump,
-						jumpConfig: jumpField.jumpConfig as Record<string, unknown> | undefined,
-					};
-					const value = await SmartCrawler.extractField(
-						executeFunctions,
-						targetElement,
-						fieldData,
-						jumpUrl,
-						cookie,
-						jumpLevel + 1,
-					);
-					jumpData[jumpField.name] = value;
-				} catch (error) {
-					if (executeFunctions.continueOnFail()) {
-						jumpData[jumpField.name] = null;
-					} else {
-						throw error;
-					}
+		const $j = cheerio.load(jumpHtml);
+		const target = field.targetSelector
+			? $j(field.targetSelector).first()
+			: $j('body');
+
+		if (target.length === 0) return null;
+
+		// 提取子字段
+		const subFields = SmartCrawler.parseJumpSubFields(field.jumpFields);
+
+		if (subFields.length > 0) {
+			const result: Record<string, unknown> = {};
+			for (const sf of subFields) {
+				const subEl = target.find(sf.selector).first();
+				if (subEl.length === 0) {
+					result[sf.name] = null;
+					continue;
+				}
+				switch (sf.type || 'text') {
+					case 'text': result[sf.name] = subEl.text().trim() || null; break;
+					case 'html': result[sf.name] = subEl.html() || null; break;
+					case 'attribute': result[sf.name] = sf.attribute ? subEl.attr(sf.attribute) || null : null; break;
+					default: result[sf.name] = null;
 				}
 			}
-			return jumpData;
+			return result;
 		}
 
-		// 如果没有配置字段，返回目标元素的文本内容
-		return targetElement.text().trim();
+		// 没有子字段配置时返回目标区域文本
+		return target.text().trim() || null;
 	}
 
-	private static extractValue(
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		element: cheerio.Cheerio<any>,
-		type: 'text' | 'html' | 'attribute',
-		attribute?: string,
+	/**
+	 * 查找跳转 URL
+	 */
+	private static findJumpUrl(
+		el: cheerio.Cheerio<AnyNode>,
+		clickSelector: string,
+		baseUrl: string,
 	): string | null {
-		switch (type) {
-			case 'text':
-				return element.text().trim() || null;
-			case 'html':
-				return element.html() || null;
-			case 'attribute':
-				if (!attribute) {
-					return null;
-				}
-				return element.attr(attribute) || null;
-			default:
-				return null;
-		}
-	}
+		const extractHref = (target: cheerio.Cheerio<AnyNode>): string | null => {
+			const href = target.attr('href')
+				|| target.attr('data-href')
+				|| target.attr('data-url');
+			if (href && !href.startsWith('#') && !href.startsWith('javascript:')) {
+				return href;
+			}
+			// 检查 onclick
+			const onclick = target.attr('onclick') || '';
+			const m = onclick.match(/(?:location\.href|window\.location)\s*=\s*['"]([^'"]+)['"]/);
+			if (m) return m[1];
+			const m2 = onclick.match(/window\.open\s*\(\s*['"]([^'"]+)['"]/);
+			if (m2) return m2[1];
+			return null;
+		};
 
-	private static getJumpConfig(
-		jumpConfig: Record<string, unknown>,
-		level: number,
-	): JumpConfig | null {
-		if (level === 1 && jumpConfig.firstJump) {
-			return SmartCrawler.normalizeJumpConfig(jumpConfig.firstJump as Record<string, unknown>);
+		// 1. clickSelector 指定的元素
+		if (clickSelector) {
+			const click = el.find(clickSelector).first();
+			if (click.length) {
+				const href = extractHref(click);
+				if (href) return SmartCrawler.resolveUrl(baseUrl, href);
+			}
 		}
-		if (level === 2 && jumpConfig.secondJump) {
-			return SmartCrawler.normalizeJumpConfig(jumpConfig.secondJump as Record<string, unknown>);
+
+		// 2. 元素内部的 a 标签
+		const innerA = el.find('a[href]').first();
+		if (innerA.length) {
+			const href = extractHref(innerA);
+			if (href) return SmartCrawler.resolveUrl(baseUrl, href);
 		}
-		if (level === 3 && jumpConfig.thirdJump) {
-			return SmartCrawler.normalizeJumpConfig(jumpConfig.thirdJump as Record<string, unknown>);
+
+		// 3. 元素本身
+		const selfHref = extractHref(el);
+		if (selfHref) return SmartCrawler.resolveUrl(baseUrl, selfHref);
+
+		// 4. 父元素 a 标签
+		const parentA = el.closest('a');
+		if (parentA.length) {
+			const href = extractHref(parentA);
+			if (href) return SmartCrawler.resolveUrl(baseUrl, href);
 		}
+
+		// 5. 向上查找容器内链接
+		let container = el.parent();
+		for (let i = 0; i < 3 && container.length; i++) {
+			const link = container.find('a[href]').first();
+			if (link.length) {
+				const href = extractHref(link);
+				if (href) return SmartCrawler.resolveUrl(baseUrl, href);
+			}
+			container = container.parent();
+		}
+
 		return null;
 	}
 
-	private static normalizeJumpConfig(config: Record<string, unknown>): JumpConfig {
-		const normalized: JumpConfig = {
-			clickSelector: (config.clickSelector as string) || '',
-			targetSelector: config.targetSelector as string | undefined,
-			fields: [],
-		};
-
-		if (config.fields && typeof config.fields === 'object') {
-			let fieldsArray: FieldData[] = [];
-			
-			// 处理 n8n fixedCollection 的不同数据结构
-			if ('field' in config.fields) {
-				const fields = (config.fields as { field?: FieldData[] }).field;
-				if (Array.isArray(fields)) {
-					fieldsArray = fields;
-				} else if (fields && typeof fields === 'object') {
-					// 如果只有一个字段，n8n 可能返回对象而不是数组
-					fieldsArray = [fields as FieldData];
-				}
-			} else if (Array.isArray(config.fields)) {
-				// 直接是数组的情况
-				fieldsArray = config.fields as FieldData[];
-			}
-			
-			if (fieldsArray.length > 0) {
-				normalized.fields = fieldsArray.map((f: FieldData): FieldConfig => ({
-					name: f.name,
-					selector: f.selector,
-					type: f.type || 'text',
-					attribute: f.attribute,
-					isJump: f.isJump || false,
-					jumpConfig: f.jumpConfig as JumpConfig | undefined,
-				}));
-			}
+	/**
+	 * 解析跳转子字段配置
+	 */
+	private static parseJumpSubFields(jumpFields?: { field?: JumpSubField[] }): JumpSubField[] {
+		if (!jumpFields || typeof jumpFields !== 'object') return [];
+		if ('field' in jumpFields) {
+			const fv = jumpFields.field;
+			if (Array.isArray(fv)) return fv;
+			if (fv && typeof fv === 'object') return [fv as JumpSubField];
 		}
-
-		return normalized;
+		if (Array.isArray(jumpFields)) return jumpFields as JumpSubField[];
+		return [];
 	}
 
-	private static resolveUrl(baseUrl: string, relativeUrl: string): string {
-		try {
-			// Use Node.js built-in URL constructor
-			const url = new URL(relativeUrl, baseUrl);
-			return url.href;
-		} catch {
-			return relativeUrl;
-		}
+	private static resolveUrl(base: string, rel: string): string {
+		try { return new URL(rel, base).href; } catch { return rel; }
 	}
 }
