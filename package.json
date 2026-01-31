@@ -1,0 +1,59 @@
+{
+	"name": "n8n-nodes-smart_crawler",
+	"version": "0.1.0",
+	"description": "通用智能爬虫n8n节点，使用Axios + Cheerio，支持多跳数据提取",
+	"license": "MIT",
+	"homepage": "https://github.com/MaskerPRC/n8n-nodes-smart_crawler#readme",
+	"keywords": [
+		"n8n-community-node-package",
+		"crawler",
+		"web-scraping",
+		"axios",
+		"cheerio"
+	],
+	"author": {
+		"name": "MaskerPRC"
+	},
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/MaskerPRC/n8n-nodes-smart_crawler.git"
+	},
+	"scripts": {
+		"build": "n8n-node build",
+		"build:watch": "tsc --watch",
+		"dev": "n8n-node dev",
+		"lint": "n8n-node lint",
+		"lint:fix": "n8n-node lint --fix",
+		"release": "n8n-node release",
+		"prepublishOnly": "n8n-node prerelease",
+		"test": "jest",
+		"test:watch": "jest --watch"
+	},
+	"files": [
+		"dist"
+	],
+		"n8n": {
+		"n8nNodesApiVersion": 1,
+		"strict": true,
+		"nodes": [
+			"dist/nodes/SmartCrawler/SmartCrawler.node.js"
+		]
+	},
+	"devDependencies": {
+		"@n8n/node-cli": "*",
+		"@types/jest": "^29.5.12",
+		"eslint": "9.32.0",
+		"jest": "^29.7.0",
+		"prettier": "3.6.2",
+		"release-it": "^19.0.4",
+		"ts-jest": "^29.1.2",
+		"typescript": "5.9.2"
+	},
+	"peerDependencies": {
+		"n8n-workflow": "*"
+	},
+	"dependencies": {
+		"axios": "^1.13.4",
+		"cheerio": "^1.2.0"
+	}
+}
