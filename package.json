@@ -1,6 +1,6 @@
 {
 	"name": "n8n-nodes-smart-crawler",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "通用智能爬虫n8n节点，使用Axios + Cheerio，支持多跳数据提取",
 	"license": "MIT",
 	"homepage": "https://github.com/MaskerPRC/n8n-nodes-smart-crawler#readme",
