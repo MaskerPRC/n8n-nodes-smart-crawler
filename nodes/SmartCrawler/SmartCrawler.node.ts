@@ -276,7 +276,7 @@ export class SmartCrawler implements INodeType {
 
 				if (useBrowser) {
 					const puppeteer = await import('puppeteer');
-					const browser = await puppeteer.default.launch({ headless: true });
+					const browser = await puppeteer.default.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
 					try {
 						const page = await browser.newPage();
 						if (cookie) {
@@ -399,7 +399,7 @@ export class SmartCrawler implements INodeType {
 
 		if (useBrowser) {
 			const puppeteer = await import('puppeteer');
-			const browser = await puppeteer.default.launch({ headless: true });
+			const browser = await puppeteer.default.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
 			try {
 				const page = await browser.newPage();
 				if (cookie) {
