@@ -6,9 +6,9 @@ import type {
 	INodeTypeDescription,
 } from 'n8n-workflow';
 import { NodeConnectionTypes, NodeOperationError } from 'n8n-workflow';
-// eslint-disable-next-line @n8n/community-nodes/no-restricted-imports
+ 
 import axios from 'axios';
-// eslint-disable-next-line @n8n/community-nodes/no-restricted-imports
+ 
 import * as cheerio from 'cheerio';
 
 interface FieldConfig {

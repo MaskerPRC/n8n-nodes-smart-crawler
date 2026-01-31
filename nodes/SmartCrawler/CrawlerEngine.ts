@@ -3,6 +3,7 @@
  * 支持模拟点击跳转功能
  */
 import axios from 'axios';
+import type { AnyNode } from 'domhandler';
 import * as cheerio from 'cheerio';
 
 export interface FieldConfig {
@@ -28,6 +29,8 @@ export interface CrawlerOptions {
 	cookie?: string;
 	userAgent?: string;
 	maxItems?: number;
+	useBrowser?: boolean;  // 使用 puppeteer 渲染 JS 页面
+	waitSelector?: string; // useBrowser 时等待该选择器出现再提取
 }
 
 export interface CrawlerResult {
@@ -42,7 +45,7 @@ export class CrawlerEngine {
 	/**
 	 * 从元素提取 URL（支持多种方式）
 	 */
-	private static extractUrlFromElement(el: cheerio.Cheerio<any>): string | null {
+	private static extractUrlFromElement(el: cheerio.Cheerio<AnyNode>): string | null {
 		// 1. 标准 href
 		const href = el.attr('href');
 		if (href && !href.startsWith('#') && !href.startsWith('javascript:')) {
@@ -84,7 +87,7 @@ export class CrawlerEngine {
 	 * 模拟点击 - 从指定元素出发，查找可跳转的链接
 	 * 支持：href、data-*属性、onclick内联事件
 	 */
-	private static findClickableLink(element: cheerio.Cheerio<any>, clickSelector: string): string | null {
+	private static findClickableLink(element: cheerio.Cheerio<AnyNode>, clickSelector: string): string | null {
 		// 1. 在元素内查找 clickSelector
 		if (clickSelector) {
 			const inner = element.find(clickSelector).first();
@@ -138,7 +141,7 @@ export class CrawlerEngine {
 	}
 
 	private static extractValue(
-		element: cheerio.Cheerio<any>,
+		element: cheerio.Cheerio<AnyNode>,
 		type: 'text' | 'html' | 'attribute',
 		attribute?: string,
 	): string | null {
@@ -154,12 +157,13 @@ export class CrawlerEngine {
 	 * 提取字段值（支持跳转）
 	 */
 	private static async extractField(
-		element: cheerio.Cheerio<any>,
+		element: cheerio.Cheerio<AnyNode>,
 		field: FieldConfig,
 		baseUrl: string,
 		cookie: string,
 		userAgent: string,
 		jumpLevel: number,
+		useBrowser: boolean = false,
 	): Promise<unknown> {
 		if (jumpLevel > 3) {
 			throw new Error('最多支持3跳');
@@ -175,24 +179,37 @@ export class CrawlerEngine {
 
 		// 跳转字段 - 模拟点击
 		let href = CrawlerEngine.findClickableLink(el, field.jumpConfig.clickSelector);
-		if (!href) return null;
 
-		// 处理 data-id 模式
-		if (href.startsWith('__data_id__:') && field.jumpConfig.urlTemplate) {
-			const dataId = href.replace('__data_id__:', '');
-			href = field.jumpConfig.urlTemplate.replace('{id}', dataId);
-		} else if (href.startsWith('__data_id__:')) {
-			// 没有模板，无法构造 URL
-			return null;
+		let jumpHtml: string;
+		let resolvedJumpUrl = baseUrl; // 用于子字段递归
+
+		if (useBrowser) {
+			// 用 puppeteer 真正模拟点击跳转
+			jumpHtml = await CrawlerEngine.clickAndGetHtml(
+				baseUrl,
+				field.jumpConfig.clickSelector,
+				field.jumpConfig.targetSelector,
+				cookie,
+			);
+		} else {
+			// 静态模式：从 HTML 中找链接
+			if (!href) return null;
+
+			if (href.startsWith('__data_id__:') && field.jumpConfig.urlTemplate) {
+				const dataId = href.replace('__data_id__:', '');
+				href = field.jumpConfig.urlTemplate.replace('{id}', dataId);
+			} else if (href.startsWith('__data_id__:')) {
+				return null;
+			}
+
+			resolvedJumpUrl = CrawlerEngine.resolveUrl(baseUrl, href);
+			const jumpRes = await axios.get(resolvedJumpUrl, {
+				headers: { ...(cookie && { Cookie: cookie }), 'User-Agent': userAgent }
+			});
+			jumpHtml = jumpRes.data;
 		}
 
-		const jumpUrl = CrawlerEngine.resolveUrl(baseUrl, href);
-
-		const jumpRes = await axios.get(jumpUrl, {
-			headers: { ...(cookie && { Cookie: cookie }), 'User-Agent': userAgent }
-		});
-
-		const $j = cheerio.load(jumpRes.data);
+		const $j = cheerio.load(jumpHtml);
 		const target = field.jumpConfig.targetSelector
 			? $j(field.jumpConfig.targetSelector).first()
 			: $j('body');
@@ -204,13 +221,93 @@ export class CrawlerEngine {
 			const subData: Record<string, unknown> = {};
 			for (const sf of field.jumpConfig.fields) {
 				subData[sf.name] = await CrawlerEngine.extractField(
-					target, sf, jumpUrl, cookie, userAgent, jumpLevel + 1
+					target, sf, resolvedJumpUrl, cookie, userAgent, jumpLevel + 1, useBrowser
 				);
 			}
 			return subData;
 		}
 
 		return target.text().trim();
+	}
+
+	/**
+	 * 用 puppeteer 获取渲染后的 HTML
+	 */
+	private static async getRenderedHtml(
+		url: string,
+		waitSelector: string,
+		cookie?: string,
+	): Promise<string> {
+		const puppeteer = await import('puppeteer');
+		const browser = await puppeteer.default.launch({ headless: true });
+		try {
+			const page = await browser.newPage();
+
+			if (cookie) {
+				const cookies = cookie.split(';').map(c => {
+					const [name, ...rest] = c.trim().split('=');
+					return {
+						name: name.trim(),
+						value: rest.join('=').trim(),
+						domain: new URL(url).hostname,
+					};
+				}).filter(c => c.name && c.value);
+				if (cookies.length) await page.setCookie(...cookies);
+			}
+
+			await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+
+			if (waitSelector) {
+				await page.waitForSelector(waitSelector, { timeout: 15000 });
+			}
+
+			const html = await page.content();
+			return html;
+		} finally {
+			await browser.close();
+		}
+	}
+
+	/**
+	 * 用 puppeteer 模拟点击并获取跳转后页面的 HTML
+	 */
+	private static async clickAndGetHtml(
+		url: string,
+		clickSelector: string,
+		waitSelector?: string,
+		cookie?: string,
+	): Promise<string> {
+		const puppeteer = await import('puppeteer');
+		const browser = await puppeteer.default.launch({ headless: true });
+		try {
+			const page = await browser.newPage();
+
+			if (cookie) {
+				const cookies = cookie.split(';').map(c => {
+					const [name, ...rest] = c.trim().split('=');
+					return {
+						name: name.trim(),
+						value: rest.join('=').trim(),
+						domain: new URL(url).hostname,
+					};
+				}).filter(c => c.name && c.value);
+				if (cookies.length) await page.setCookie(...cookies);
+			}
+
+			await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+			await page.waitForSelector(clickSelector, { timeout: 15000 });
+			await page.click(clickSelector);
+			await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
+
+			if (waitSelector) {
+				await page.waitForSelector(waitSelector, { timeout: 15000 });
+			}
+
+			const html = await page.content();
+			return html;
+		} finally {
+			await browser.close();
+		}
 	}
 
 	/**
@@ -224,16 +321,25 @@ export class CrawlerEngine {
 			cookie = '',
 			userAgent = DEFAULT_UA,
 			maxItems,
+			useBrowser = false,
+			waitSelector,
 		} = options;
 
 		const result: CrawlerResult = { success: true, data: [], errors: [] };
 
 		try {
-			const res = await axios.get(url, {
-				headers: { ...(cookie && { Cookie: cookie }), 'User-Agent': userAgent }
-			});
+			let html: string;
 
-			const $ = cheerio.load(res.data);
+			if (useBrowser) {
+				html = await CrawlerEngine.getRenderedHtml(url, waitSelector || listSelector, cookie);
+			} else {
+				const res = await axios.get(url, {
+					headers: { ...(cookie && { Cookie: cookie }), 'User-Agent': userAgent }
+				});
+				html = res.data;
+			}
+
+			const $ = cheerio.load(html);
 			const items = $(listSelector);
 
 			if (items.length === 0) {
@@ -251,7 +357,7 @@ export class CrawlerEngine {
 				for (const field of fields) {
 					try {
 						data[field.name] = await CrawlerEngine.extractField(
-							item, field, url, cookie, userAgent, 1
+							item, field, url, cookie, userAgent, 1, useBrowser
 						);
 					} catch (e) {
 						data[field.name] = null;

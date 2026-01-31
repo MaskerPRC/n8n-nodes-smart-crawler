@@ -1,5 +1,5 @@
 import type { IExecuteFunctions } from 'n8n-workflow';
-// eslint-disable-next-line @n8n/community-nodes/no-restricted-imports
+ 
 import axios from 'axios';
 import { SmartCrawler } from './SmartCrawler.node';
 
